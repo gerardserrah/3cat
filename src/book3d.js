@@ -252,25 +252,30 @@ export class Book3DEngine {
 
     const { pageWidthMm, pageHeightMm, spineWidthMm, overhangMm, boardThicknessMm, coverType, finish } = this.format;
     const isHard = coverType === 'hardcover';
+    const isMagazine = coverType === 'magazine';
 
     // Normalize book height to ~2.2 world units
     const mmToUnit = 2.2 / Math.max(80, pageHeightMm);
     const pageW = pageWidthMm * mmToUnit;
     const pageH = pageHeightMm * mmToUnit;
     const overhang = isHard ? Math.max(2.5, overhangMm || 3.0) * mmToUnit : 0;
-    const boardThick = (isHard ? Math.max(0.8, boardThicknessMm || 2.6) : 0.45) * mmToUnit;
-    const rawSpineW = Math.max(4, spineWidthMm) * mmToUnit;
-    const spineW = Math.max(rawSpineW, boardThick * 2 + 0.02);
-    const blockThick = Math.max(0.015, spineW - boardThick * 2);
+    const boardThick = (isHard ? Math.max(0.8, boardThicknessMm || 2.6) : isMagazine ? 0.22 : 0.45) * mmToUnit;
+    // Magazine: ultra-slim saddle-stitched fold with NO thick spine!
+    const rawSpineW = isMagazine
+      ? Math.min(2.2, Math.max(1.2, spineWidthMm * 0.22)) * mmToUnit
+      : Math.max(4, spineWidthMm) * mmToUnit;
+    const spineW = isMagazine ? Math.max(rawSpineW, boardThick * 2 + 0.008) : Math.max(rawSpineW, boardThick * 2 + 0.02);
+    const blockThick = Math.max(isMagazine ? 0.007 : 0.015, spineW - boardThick * 2);
 
     const coverW = pageW + overhang;
     const coverH = pageH + overhang * 2;
 
-    this.dims = { pageW, pageH, coverW, coverH, boardThick, spineW, blockThick, overhang, isHard };
+    this.dims = { pageW, pageH, coverW, coverH, boardThick, spineW, blockThick, overhang, isHard, isMagazine };
 
-    // Cover material roughness based on finish slider (0=matte 0.78, 1=glossy 0.15)
-    const roughness = 0.78 - finish * 0.62;
-    const clearcoat = isHard ? 0.1 + finish * 0.45 : finish * 0.35;
+    // Cover material roughness based on finish slider (magazines have slightly glossier coated paper feel)
+    const effFinish = isMagazine ? Math.min(0.95, finish + 0.2) : finish;
+    const roughness = 0.78 - effFinish * 0.62;
+    const clearcoat = isHard ? 0.1 + effFinish * 0.45 : isMagazine ? 0.25 + effFinish * 0.45 : effFinish * 0.35;
 
     const makeCoverMat = (map, color = 0xffffff) =>
       new THREE.MeshPhysicalMaterial({
@@ -320,19 +325,23 @@ export class Book3DEngine {
     // Book spine sits at x = -coverW / 2 so closed book is centered at x = 0
     const spineX = -coverW / 2;
 
-    // 1. SPINE MESH
-    const spineGeo = new THREE.BoxGeometry(boardThick, coverH, spineW);
-    const spineMat = makeCoverMat(this.textures.spine, this.textures.edgeColor);
-    const spineMaterials = [
-      endpaperMat,   // +x (inner spine)
-      spineMat,      // -x (outer spine, facing left)
-      boardEdgeMat,  // +y (top)
-      boardEdgeMat,  // -y (bottom)
-      boardEdgeMat,  // +z
-      boardEdgeMat,  // -z
-    ];
+    // 1. SPINE MESH (for Magazine, render an ultra-slim rounded fold edge instead of a flat spine!)
+    const spineGeo = isMagazine
+      ? new THREE.CylinderGeometry(spineW / 2, spineW / 2, coverH, 10, 1, false, Math.PI, Math.PI)
+      : new THREE.BoxGeometry(boardThick, coverH, spineW);
+    const spineMat = makeCoverMat(isMagazine ? null : this.textures.spine, this.textures.edgeColor);
+    const spineMaterials = isMagazine
+      ? spineMat
+      : [
+          endpaperMat,   // +x (inner spine)
+          spineMat,      // -x (outer spine, facing left)
+          boardEdgeMat,  // +y (top)
+          boardEdgeMat,  // -y (bottom)
+          boardEdgeMat,  // +z
+          boardEdgeMat,  // -z
+        ];
     this.spineMesh = new THREE.Mesh(spineGeo, spineMaterials);
-    this.spineMesh.position.set(spineX - boardThick / 2, 0, 0);
+    this.spineMesh.position.set(isMagazine ? spineX : spineX - boardThick / 2, 0, 0);
     this.spineMesh.castShadow = true;
     this.spineMesh.receiveShadow = true;
     this.bookCenterGroup.add(this.spineMesh);

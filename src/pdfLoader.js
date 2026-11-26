@@ -113,6 +113,192 @@ async function renderPageToCanvas(pdfPage, boxes, targetMaxPx, extraCropMm = 0) 
 }
 
 /**
+ * Quickly checks whether a rendered small thumbnail of page 1 is mostly blank white
+ * (typical of print-ready interior PDFs that start with blank endpaper paste-downs).
+ */
+async function isPageMostlyBlank(pdfPage) {
+  const vp = pdfPage.getViewport({ scale: 0.15 });
+  const c = document.createElement('canvas');
+  c.width = Math.max(16, Math.round(vp.width));
+  c.height = Math.max(16, Math.round(vp.height));
+  const ctx = c.getContext('2d', { alpha: false });
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, c.width, c.height);
+  await pdfPage.render({ canvasContext: ctx, viewport: vp }).promise;
+
+  // Sample inner 80% to ignore crop marks around the edges
+  const sx = Math.floor(c.width * 0.12);
+  const sy = Math.floor(c.height * 0.12);
+  const sw = Math.max(1, Math.floor(c.width * 0.76));
+  const sh = Math.max(1, Math.floor(c.height * 0.76));
+  const data = ctx.getImageData(sx, sy, sw, sh).data;
+  let nonWhite = 0;
+  const total = sw * sh;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i] < 242 || data[i + 1] < 242 || data[i + 2] < 242) {
+      nonWhite++;
+    }
+  }
+  return nonWhite / total < 0.015;
+}
+
+/**
+ * Quickly inspects a PDF to determine if it is:
+ * - 'cover' (1-2 pages or cover spread)
+ * - 'interior' (interior-only pages, e.g. named int_* or starting with blank endpaper)
+ * - 'combined' (a single all-in-one PDF containing Front Cover + Interior Pages + Back Cover!)
+ */
+export async function inspectPdfRole(arrayBuffer, filename = '', totalUploadedPdfs = 1) {
+  const boxes = extractPdfBoxes(arrayBuffer);
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise;
+  const numPages = pdf.numPages;
+  const page1 = await pdf.getPage(1);
+  const view = page1.view;
+  const box = boxes?.trimBox || view;
+  const w = Math.abs(box[2] - box[0]);
+  const h = Math.abs(box[3] - box[1]);
+
+  let page2WideDiff = false;
+  if (numPages >= 2) {
+    const page2 = await pdf.getPage(2);
+    const v2 = page2.view;
+    const w2 = Math.abs(v2[2] - v2[0]);
+    if (w > w2 * 1.5) page2WideDiff = true;
+  }
+
+  const lower = filename.toLowerCase();
+  const nameLooksCover = /\b(cob|cover|portada|tapa|cubierta|coberta)\b|cob_|cover_/.test(lower);
+  const nameLooksInterior = /\b(int|interior|tripa|pages|pagines|guardes)\b|int_/.test(lower);
+  const isWideSpread = w > h * 1.15;
+
+  let role = 'interior';
+  if (numPages <= 2) {
+    role = nameLooksInterior ? 'interior' : 'cover';
+  } else if (totalUploadedPdfs === 1 && !nameLooksInterior) {
+    // Single multi-page PDF uploaded: check if page 1 is an actual cover (not blank paste-down)
+    const blankP1 = await isPageMostlyBlank(page1);
+    role = blankP1 ? 'interior' : 'combined';
+  } else if (nameLooksCover && numPages <= 3) {
+    role = 'cover';
+  } else {
+    role = 'interior';
+  }
+
+  await pdf.destroy();
+  return { role, numPages, widthPt: w, heightPt: h, isWideSpread, page2WideDiff };
+}
+
+/**
+ * Loads an all-in-one PDF that contains Front Cover + Interior Pages + Back Cover.
+ * Supports both:
+ *  - Page 1 = front cover, Page 2..N-1 = interior pages, Page N = back cover (standard magazine/book PDF)
+ *  - Page 1 = wide cover spread, Page 2..N = interior pages
+ */
+export async function loadCombinedPdf(arrayBuffer, extraCropMm = 0, onProgress = () => {}) {
+  const boxes = extractPdfBoxes(arrayBuffer);
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise;
+  const totalPages = pdf.numPages;
+
+  const page1 = await pdf.getPage(1);
+  const page2 = await pdf.getPage(2);
+  const w1 = Math.abs(page1.view[2] - page1.view[0]);
+  const w2 = Math.abs(page2.view[2] - page2.view[0]);
+  const p1IsSpread = w1 > w2 * 1.5;
+
+  const targetInteriorPx = totalPages > 60 ? 720 : 960;
+
+  if (p1IsSpread) {
+    // Page 1 is a full cover spread (back + spine + front), Pages 2..N are interior
+    onProgress(0.05, 1, totalPages);
+    const coverRendered = await renderPageToCanvas(page1, boxes, 3600, extraCropMm);
+    const pages = [];
+    let pageWidthMm = 210;
+    let pageHeightMm = 297;
+
+    for (let i = 2; i <= totalPages; i++) {
+      const p = await pdf.getPage(i);
+      const r = await renderPageToCanvas(p, boxes, targetInteriorPx, 0);
+      if (i === 2) {
+        pageWidthMm = r.widthMm;
+        pageHeightMm = r.heightMm;
+      }
+      pages.push(r.canvas);
+      onProgress(i / totalPages, i, totalPages);
+    }
+
+    await pdf.destroy();
+    return {
+      mode: 'spread-plus-interior',
+      coverData: { ...coverRendered, isSpread: true, boxes },
+      interiorData: {
+        pages,
+        numPages: pages.length,
+        pageWidthMm,
+        pageHeightMm,
+        hasTrimBox: coverRendered.hasTrimBox,
+      },
+    };
+  }
+
+  // Standard all-in-one PDF: Page 1 = Front Cover, Page N = Back Cover, Pages 2..N-1 = Interior
+  onProgress(0.04, 1, totalPages);
+  const frontRendered = await renderPageToCanvas(page1, boxes, 2200, extraCropMm);
+  const lastPage = await pdf.getPage(totalPages);
+  const backRendered = await renderPageToCanvas(lastPage, boxes, 2200, extraCropMm);
+
+  const pageWidthMm = frontRendered.widthMm;
+  const pageHeightMm = frontRendered.heightMm;
+  const edgeColor = sampleEdgeColor(frontRendered.canvas);
+
+  // Synthesize a clean matching spine canvas from the cover's edge color
+  const spineCanvas = document.createElement('canvas');
+  spineCanvas.width = 64;
+  spineCanvas.height = frontRendered.canvas.height;
+  const sctx = spineCanvas.getContext('2d', { alpha: false });
+  sctx.fillStyle = edgeColor;
+  sctx.fillRect(0, 0, spineCanvas.width, spineCanvas.height);
+
+  const frontInsideCanvas = buildInsideBoardCanvas(frontRendered.canvas, 'front');
+  const backInsideCanvas = buildInsideBoardCanvas(backRendered.canvas, 'back');
+
+  const interiorPages = [];
+  for (let i = 2; i <= totalPages - 1; i++) {
+    const p = await pdf.getPage(i);
+    const r = await renderPageToCanvas(p, boxes, targetInteriorPx, 0);
+    interiorPages.push(r.canvas);
+    onProgress(i / totalPages, i, totalPages);
+  }
+
+  await pdf.destroy();
+
+  return {
+    mode: 'single-pages-all-in-one',
+    slicedCover: {
+      frontCanvas: frontRendered.canvas,
+      backCanvas: backRendered.canvas,
+      spineCanvas,
+      frontInsideCanvas,
+      backInsideCanvas,
+      edgeColor,
+    },
+    coverData: {
+      canvas: frontRendered.canvas,
+      widthMm: pageWidthMm * 2,
+      heightMm: pageHeightMm,
+      isSpread: false,
+      boxes,
+    },
+    interiorData: {
+      pages: interiorPages,
+      numPages: interiorPages.length,
+      pageWidthMm,
+      pageHeightMm,
+      hasTrimBox: frontRendered.hasTrimBox,
+    },
+  };
+}
+
+/**
  * Loads a cover PDF (typically Back + Spine + Front spread on page 1).
  */
 export async function loadCoverPdf(arrayBuffer, extraCropMm = 0) {

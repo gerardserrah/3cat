@@ -125,49 +125,42 @@
         <!-- TAB 1: PDFs & FORMAT -->
         <section id="tab-files" class="tab-pane active">
           <div class="section-group">
-            <h2>Fitxers PDF del Llibre</h2>
-            <p class="hint">Detecta automàticament el format, les marques de tall (TrimBox) i l'amplada del llom.</p>
+            <h2>Fitxers del Llibre</h2>
+            <p class="hint">Detecta automàticament quin PDF és la portada, quin és l'interior, les marques de tall (TrimBox) i el llom.</p>
 
-            <label class="upload-box" id="drop-cover">
-              <input type="file" id="input-cover-pdf" accept="application/pdf" hidden />
-              <div class="upload-icon">📕</div>
+            <label class="upload-box unified" id="drop-files">
+              <input type="file" id="input-files" accept="application/pdf,application/json,.pdf,.json" multiple hidden />
+              <div class="upload-icon">📂</div>
               <div class="upload-text">
-                <strong>PDF Portada (Contraportada + Llom + Portada)</strong>
-                <span id="cover-filename">Exemple: Cançonarres de Nadal (portada.pdf)</span>
+                <strong>Pujar fitxers (PDF Portada, PDF Interior o JSON)</strong>
+                <span>Pots seleccionar o arrossegar diversos documents alhora</span>
               </div>
             </label>
 
-            <label class="upload-box" id="drop-interior">
-              <input type="file" id="input-interior-pdf" accept="application/pdf" hidden />
-              <div class="upload-icon">📄</div>
-              <div class="upload-text">
-                <strong>PDF Pàgines Interiors</strong>
-                <span id="interior-filename">Exemple: Cançonarres de Nadal (interior.pdf)</span>
+            <div class="loaded-files-list">
+              <div class="loaded-file-row">
+                <span class="lf-tag">📕 Portada</span>
+                <span id="cover-filename" class="lf-name">Cançonarres de Nadal (portada.pdf)</span>
               </div>
-            </label>
-
-            <button id="btn-load-sample" class="btn-secondary full-width">
-              Carregar llibre d'exemple (Cançonarres)
-            </button>
-          </div>
-
-          <div class="section-group">
-            <h2>Projecte (JSON)</h2>
-            <p class="hint">Guarda o recupera tota la configuració: posició, càmera, tapa, llom, il·luminació, timeline i paràmetres 4K.</p>
-            <div class="segmented" style="gap: 6px; background: transparent; border: none; padding: 0;">
-              <button id="btn-export-json" class="btn-primary">💾 Exportar JSON</button>
-              <label class="btn-secondary" style="text-align: center; cursor: pointer;">
-                📂 Importar JSON
-                <input type="file" id="input-import-json" accept="application/json,.json" hidden />
-              </label>
+              <div class="loaded-file-row">
+                <span class="lf-tag">📄 Interior</span>
+                <span id="interior-filename" class="lf-name">Cançonarres de Nadal (interior.pdf)</span>
+              </div>
             </div>
           </div>
 
           <div class="section-group">
+            <h2>Guardar Projecte (JSON)</h2>
+            <p class="hint">Exporta tota la configuració (posició, càmera, tapa, llom, timeline i paràmetres 4K). Per importar un JSON, puja'l pel botó de dalt.</p>
+            <button id="btn-export-json" class="btn-primary full-width">💾 Exportar Projecte JSON</button>
+          </div>
+
+          <div class="section-group">
             <h2>Tipus d'Enquadernació</h2>
-            <div class="segmented" id="cover-type-selector">
+            <div class="segmented three-col" id="cover-type-selector">
               <button class="seg-btn active" data-value="hardcover">Tapa Dura</button>
               <button class="seg-btn" data-value="softcover">Tapa Normal</button>
+              <button class="seg-btn" data-value="magazine">Revista</button>
             </div>
             <p class="hint" id="cover-type-hint">Tapa rígida amb gruix i ceja (sobresurt respecte al bloc de pàgines).</p>
 

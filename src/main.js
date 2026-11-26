@@ -1,4 +1,6 @@
 import {
+  inspectPdfRole,
+  loadCombinedPdf,
   loadCoverPdf,
   loadInteriorPdf,
   sliceCoverCanvas,
@@ -300,6 +302,10 @@ function hideStatus() {
 
 // ---------------- PDF LOADING & FORMAT DETECTION ----------------
 function applyCoverTextures() {
+  if (state.directSlicedCover) {
+    engine.setCoverTextures(state.directSlicedCover);
+    return;
+  }
   if (!state.coverData) return;
   const sliced = sliceCoverCanvas(
     state.coverData.canvas,
@@ -312,12 +318,19 @@ function applyCoverTextures() {
 function updateDetectedInfoUI(detected) {
   $('info-page-size').textContent = `${detected.pageWidthMm} × ${detected.pageHeightMm} mm`;
   $('info-cover-size').textContent = `${detected.coverWidthMm} × ${detected.coverHeightMm} mm`;
-  $('info-spine-size').textContent = `${engine.format.spineWidthMm.toFixed(1)} mm`;
+  const isMag = engine.format.coverType === 'magazine';
+  $('info-spine-size').textContent = isMag ? 'Sense llom' : `${engine.format.spineWidthMm.toFixed(1)} mm`;
   $('info-page-count').textContent = detected.numPages ? `${detected.numPages} pàgs` : 'Sense interior';
 
-  const typeLabel = engine.format.coverType === 'hardcover' ? 'Tapa Dura' : 'Tapa Normal';
+  const typeLabel =
+    engine.format.coverType === 'hardcover'
+      ? 'Tapa Dura'
+      : isMag
+      ? 'Revista'
+      : 'Tapa Normal';
+  const spineText = isMag ? 'Sense llom' : `Llom ${engine.format.spineWidthMm.toFixed(1)}mm`;
   $('book-format-badge').textContent =
-    `${detected.pageWidthMm}×${detected.pageHeightMm}mm · Llom ${engine.format.spineWidthMm.toFixed(1)}mm · ${typeLabel}`;
+    `${detected.pageWidthMm}×${detected.pageHeightMm}mm · ${spineText} · ${typeLabel}`;
 }
 
 function syncFormatFromPdfs(autoSelectCoverType = true) {
@@ -390,6 +403,7 @@ async function loadSampleBook() {
     const interiorBuf = await interiorRes.arrayBuffer();
 
     state.coverBuffer = coverBuf;
+    state.directSlicedCover = null;
     state.extraCoverCropMm = 0;
     $('slider-cover-bleed').value = 0;
     $('val-cover-bleed').textContent = '0.0 mm';
@@ -424,33 +438,134 @@ document.querySelectorAll('.tab').forEach((btn) => {
   });
 });
 
-// File upload inputs + drag-and-drop
-function wireDropZone(dropId, inputId, handler) {
-  const zone = $(dropId);
-  const input = $(inputId);
-  input.addEventListener('change', async (e) => {
-    const file = e.target.files?.[0];
-    if (file) await handler(await file.arrayBuffer(), file.name);
-    input.value = '';
-  });
-  zone.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    zone.classList.add('dragover');
-  });
-  zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
-  zone.addEventListener('drop', async (e) => {
-    e.preventDefault();
-    zone.classList.remove('dragover');
-    const file = e.dataTransfer.files?.[0];
-    if (file && file.type === 'application/pdf') {
-      await handler(await file.arrayBuffer(), file.name);
+// Unified multi-file upload + drag-and-drop (handles Cover PDF, Interior PDF, and Project JSON together!)
+async function handleUploadedFiles(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+
+  const pdfFiles = files.filter(
+    (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
+  );
+  const jsonFiles = files.filter(
+    (f) => f.type === 'application/json' || f.name.toLowerCase().endsWith('.json')
+  );
+
+  if (pdfFiles.length) {
+    showStatus('Analitzant fitxers PDF...', `${pdfFiles.length} document(s) seleccionat(s)`, 0.08);
+    try {
+      const inspected = [];
+      for (const file of pdfFiles) {
+        const buffer = await file.arrayBuffer();
+        const info = await inspectPdfRole(buffer, file.name, pdfFiles.length);
+        inspected.push({ file, buffer, info });
+      }
+
+      // Case 1: Single all-in-one PDF containing Cover + Interior + Back Cover!
+      if (inspected.length === 1 && inspected[0].info.role === 'combined') {
+        const item = inspected[0];
+        showStatus('PDF complet detectat (Portada + Interior)...', item.file.name, 0.1);
+        const combined = await loadCombinedPdf(item.buffer, state.extraCoverCropMm, (p, i, total) => {
+          showStatus('Processant PDF complet...', `Pàgina ${i} de ${total} (${item.file.name})`, p);
+        });
+
+        state.coverBuffer = item.buffer;
+        state.coverData = combined.coverData;
+        state.interiorData = combined.interiorData;
+        state.directSlicedCover = combined.slicedCover || null;
+
+        $('cover-filename').textContent = `${item.file.name} (Portada + Contraportada)`;
+        $('interior-filename').textContent = `${item.file.name} (${combined.interiorData.numPages} pàgs interiors)`;
+        engine.setInteriorPages(combined.interiorData.pages);
+
+        if (combined.mode === 'single-pages-all-in-one') {
+          // Single-page PDF with no spine spread -> default to Magazine (if <= 64 pages) or Softcover
+          const autoType = combined.interiorData.numPages <= 64 ? 'magazine' : 'softcover';
+          const detected = detectBookFormat(state.coverData, state.interiorData);
+          engine.updateFormat({
+            pageWidthMm: detected.pageWidthMm,
+            pageHeightMm: detected.pageHeightMm,
+            spineWidthMm: autoType === 'magazine' ? 2.0 : detected.spineWidthMm,
+            overhangMm: 0,
+            coverType: autoType,
+          });
+          setCoverTypeUI(autoType);
+          $('slider-spine').value = engine.format.spineWidthMm;
+          $('val-spine').textContent = `${engine.format.spineWidthMm.toFixed(1)} mm`;
+          applyCoverTextures();
+          updateDetectedInfoUI(detected);
+        } else {
+          syncFormatFromPdfs(true);
+        }
+        pushHistory();
+      } else {
+        // Case 2: Separate Cover PDF and/or Interior PDF
+        let coverItem = inspected.find((x) => x.info.role === 'cover');
+        let interiorItem = inspected.find((x) => x.info.role === 'interior');
+        if (inspected.length >= 2 && (!coverItem || !interiorItem)) {
+          const sortedByPages = [...inspected].sort((a, b) => a.info.numPages - b.info.numPages);
+          coverItem = sortedByPages[0];
+          interiorItem = sortedByPages[sortedByPages.length - 1];
+        }
+
+        if (coverItem) {
+          showStatus('Processant PDF de portada...', coverItem.file.name, 0.2);
+          state.directSlicedCover = null;
+          state.coverBuffer = coverItem.buffer;
+          state.coverData = await loadCoverPdf(coverItem.buffer, state.extraCoverCropMm);
+          $('cover-filename').textContent = coverItem.file.name;
+        }
+
+        if (interiorItem) {
+          state.interiorData = await loadInteriorPdf(interiorItem.buffer, (p, i, total) => {
+            showStatus(
+              'Renderitzant pàgines interiors...',
+              `Pàgina ${i} de ${total} (${interiorItem.file.name})`,
+              0.25 + p * 0.75
+            );
+          });
+          $('interior-filename').textContent = `${interiorItem.file.name} (${state.interiorData.numPages} pàgs)`;
+          engine.setInteriorPages(state.interiorData.pages);
+        }
+
+        if (coverItem || interiorItem) {
+          syncFormatFromPdfs(true);
+          pushHistory();
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      alert(`Error processant els PDFs: ${err.message}`);
+    } finally {
+      hideStatus();
     }
-  });
+  }
+
+  // If a JSON project was uploaded (alone or together with PDFs), apply it after PDFs load
+  if (jsonFiles.length) {
+    await importProjectJson(jsonFiles[0]);
+  }
 }
 
-wireDropZone('drop-cover', 'input-cover-pdf', handleCoverBuffer);
-wireDropZone('drop-interior', 'input-interior-pdf', handleInteriorBuffer);
-$('btn-load-sample').addEventListener('click', loadSampleBook);
+const dropFilesZone = $('drop-files');
+const inputFiles = $('input-files');
+inputFiles.addEventListener('change', async (e) => {
+  if (e.target.files?.length) {
+    await handleUploadedFiles(e.target.files);
+  }
+  inputFiles.value = '';
+});
+dropFilesZone.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  dropFilesZone.classList.add('dragover');
+});
+dropFilesZone.addEventListener('dragleave', () => dropFilesZone.classList.remove('dragover'));
+dropFilesZone.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  dropFilesZone.classList.remove('dragover');
+  if (e.dataTransfer.files?.length) {
+    await handleUploadedFiles(e.dataTransfer.files);
+  }
+});
 
 // Project JSON Export & Import
 function exportProjectJson() {
@@ -518,11 +633,6 @@ async function importProjectJson(file) {
 }
 
 $('btn-export-json').addEventListener('click', exportProjectJson);
-$('input-import-json').addEventListener('change', async (e) => {
-  const file = e.target.files?.[0];
-  if (file) await importProjectJson(file);
-  e.target.value = '';
-});
 
 // Cover Type (Hardcover / Softcover)
 function setCoverTypeUI(type) {
@@ -532,6 +642,8 @@ function setCoverTypeUI(type) {
   $('cover-type-hint').textContent =
     type === 'hardcover'
       ? 'Tapa rígida amb gruix i ceja (sobresurt respecte al bloc de pàgines).'
+      : type === 'magazine'
+      ? 'Revista grapada prima sense llom, amb tapes fines setinades a ras.'
       : 'Tapa tova / rústica fina, completament a ras del bloc de pàgines.';
   $('row-board-thick').classList.toggle('hidden', type !== 'hardcover');
 }
