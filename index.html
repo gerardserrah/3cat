@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="ca">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Llibre 3D Studio — Visor i Exportador 4K + Alpha</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+        "pdfjs-dist": "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.min.mjs",
+        "mp4-muxer": "https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.3/build/mp4-muxer.mjs",
+        "webm-muxer": "https://cdn.jsdelivr.net/npm/webm-muxer@5.1.3/build/webm-muxer.mjs"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="app">
+    <div id="main-column">
+      <!-- 3D Viewport -->
+      <main id="viewport-container">
+        <canvas id="three-canvas"></canvas>
+
+        <!-- Top Floating Bar -->
+        <header class="top-bar">
+          <div class="brand">
+            <div class="brand-icon">3D</div>
+            <div>
+              <h1>Llibre 3D Studio</h1>
+              <span id="book-format-badge" class="badge">Carregant exemple...</span>
+            </div>
+          </div>
+
+          <div class="top-actions">
+            <button id="btn-undo" class="chip-btn" title="Desfer (Cmd+Z)" disabled>
+              ↶ Desfer
+            </button>
+            <button id="btn-redo" class="chip-btn" title="Refer (Cmd+Shift+Z)" disabled>
+              ↷ Refer
+            </button>
+            <button id="btn-alpha-preview" class="chip-btn" title="Previsualitzar mapa Alpha Blanc i Negre">
+              <span class="dot-bw"></span> Vista Alpha B/N
+            </button>
+            <button id="btn-toggle-guides" class="chip-btn active" title="Mostrar marc 16:9 (4K)">
+              Marc 16:9
+            </button>
+            <button id="btn-reset-view" class="chip-btn" title="Restablir posició i càmera">
+              Restablir vista
+            </button>
+          </div>
+        </header>
+
+        <!-- 16:9 Safe Frame Overlay -->
+        <div id="frame-guide" class="frame-guide">
+          <div class="frame-guide-box">
+            <span class="frame-label">4K UHD · 3840 × 2160 (16:9)</span>
+          </div>
+        </div>
+
+        <!-- Loading / Export Overlay -->
+        <div id="status-overlay" class="status-overlay hidden">
+          <div class="status-card">
+            <div class="spinner" id="status-spinner"></div>
+            <h3 id="status-title">Processant PDF...</h3>
+            <p id="status-detail">Analitzant dimensions i generant textures</p>
+            <div class="progress-track">
+              <div id="status-progress" class="progress-fill" style="width: 0%"></div>
+            </div>
+            <button id="btn-cancel-export" class="btn-secondary hidden">Cancel·lar exportació</button>
+          </div>
+        </div>
+      </main>
+
+      <!-- Visual Interactive Timeline Dock -->
+      <section id="timeline-dock">
+        <div class="tl-toolbar">
+          <div class="tl-transport">
+            <button id="btn-play-pause" class="play-btn primary" title="Reproduir / Pausar (Espai)">▶ Reproduir</button>
+            <button id="btn-stop-anim" class="play-btn icon-only" title="Tornar a l'inici">■</button>
+            <button id="btn-prev-frame" class="play-btn icon-only" title="Frame anterior (←)">◀</button>
+            <button id="btn-next-frame" class="play-btn icon-only" title="Frame següent (→)">▶</button>
+            <span id="timeline-label" class="timeline-label">F 0/225 · 0.00s / 4.50s</span>
+          </div>
+
+          <div class="tl-presets">
+            <span class="tl-sep-label">Presets:</span>
+            <button id="btn-preset-flip" class="tl-mini-btn" title="Obrir + Passar pàgines + Tancar">📖 Recorregut</button>
+            <button id="btn-preset-turn" class="tl-mini-btn" title="Només volta de 360º">↻ Volta 360º</button>
+            <button id="btn-preset-combo" class="tl-mini-btn" title="Recorregut interior seguit de volta 360º">▶ Completa</button>
+          </div>
+
+          <div class="tl-add-group">
+            <span class="tl-sep-label">Afegir:</span>
+            <button class="tl-add-btn" data-add="open" style="--c:#22c55e">+ Obrir</button>
+            <button class="tl-add-btn" data-add="flip" style="--c:#f59e0b">+ Pàgines</button>
+            <button class="tl-add-btn" data-add="close" style="--c:#a855f7">+ Tancar</button>
+            <button class="tl-add-btn" data-add="turn" style="--c:#4f7cff">+ Volta</button>
+          </div>
+        </div>
+
+        <div class="tl-body">
+          <div id="tl-ruler" class="tl-ruler"></div>
+          <div id="tl-tracks" class="tl-tracks">
+            <div id="tl-playhead" class="tl-playhead"></div>
+          </div>
+        </div>
+
+        <div id="tl-inspector" class="tl-inspector"></div>
+      </section>
+    </div>
+
+    <!-- Right Control Panel -->
+    <aside id="sidebar">
+      <nav class="tabs">
+        <button class="tab active" data-tab="tab-files">PDFs</button>
+        <button class="tab" data-tab="tab-book">Posició</button>
+        <button class="tab" data-tab="tab-anim">Animació</button>
+        <button class="tab" data-tab="tab-export">Exportar 4K</button>
+      </nav>
+
+      <div class="tab-content">
+        <!-- TAB 1: PDFs & FORMAT -->
+        <section id="tab-files" class="tab-pane active">
+          <div class="section-group">
+            <h2>Fitxers PDF del Llibre</h2>
+            <p class="hint">Detecta automàticament el format, les marques de tall (TrimBox) i l'amplada del llom.</p>
+
+            <label class="upload-box" id="drop-cover">
+              <input type="file" id="input-cover-pdf" accept="application/pdf" hidden />
+              <div class="upload-icon">📕</div>
+              <div class="upload-text">
+                <strong>PDF Portada (Contraportada + Llom + Portada)</strong>
+                <span id="cover-filename">Exemple: Cançonarres de Nadal (portada.pdf)</span>
+              </div>
+            </label>
+
+            <label class="upload-box" id="drop-interior">
+              <input type="file" id="input-interior-pdf" accept="application/pdf" hidden />
+              <div class="upload-icon">📄</div>
+              <div class="upload-text">
+                <strong>PDF Pàgines Interiors</strong>
+                <span id="interior-filename">Exemple: Cançonarres de Nadal (interior.pdf)</span>
+              </div>
+            </label>
+
+            <button id="btn-load-sample" class="btn-secondary full-width">
+              Carregar llibre d'exemple (Cançonarres)
+            </button>
+          </div>
+
+          <div class="section-group">
+            <h2>Projecte (JSON)</h2>
+            <p class="hint">Guarda o recupera tota la configuració: posició, càmera, tapa, llom, il·luminació, timeline i paràmetres 4K.</p>
+            <div class="segmented" style="gap: 6px; background: transparent; border: none; padding: 0;">
+              <button id="btn-export-json" class="btn-primary">💾 Exportar JSON</button>
+              <label class="btn-secondary" style="text-align: center; cursor: pointer;">
+                📂 Importar JSON
+                <input type="file" id="input-import-json" accept="application/json,.json" hidden />
+              </label>
+            </div>
+          </div>
+
+          <div class="section-group">
+            <h2>Tipus d'Enquadernació</h2>
+            <div class="segmented" id="cover-type-selector">
+              <button class="seg-btn active" data-value="hardcover">Tapa Dura</button>
+              <button class="seg-btn" data-value="softcover">Tapa Normal</button>
+            </div>
+            <p class="hint" id="cover-type-hint">Tapa rígida amb gruix i ceja (sobresurt respecte al bloc de pàgines).</p>
+
+            <div class="control-row" id="row-board-thick">
+              <div class="control-header">
+                <label for="slider-board-thick">Gruix de la tapa dura (mm)</label>
+                <span id="val-board-thick" class="val">2.6 mm</span>
+              </div>
+              <input id="slider-board-thick" type="range" min="1.0" max="8.0" step="0.2" value="2.6" />
+            </div>
+          </div>
+
+          <div class="section-group">
+            <h2>Format Detectat i Ajustos</h2>
+            <div class="info-grid" id="detected-info">
+              <div class="info-item"><span>Pàgina interior</span><strong id="info-page-size">—</strong></div>
+              <div class="info-item"><span>Portada (Trim)</span><strong id="info-cover-size">—</strong></div>
+              <div class="info-item"><span>Llom</span><strong id="info-spine-size">—</strong></div>
+              <div class="info-item"><span>Pàgines</span><strong id="info-page-count">—</strong></div>
+            </div>
+
+            <div class="control-row">
+              <div class="control-header">
+                <label for="slider-spine">Amplada del llom (mm)</label>
+                <span id="val-spine" class="val">10.0 mm</span>
+              </div>
+              <input id="slider-spine" type="range" min="3" max="60" step="0.5" value="10" />
+            </div>
+
+            <div class="control-row">
+              <div class="control-header">
+                <label for="slider-cover-bleed">Retall extra portada (mm)</label>
+                <span id="val-cover-bleed" class="val">0.0 mm</span>
+              </div>
+              <input id="slider-cover-bleed" type="range" min="0" max="30" step="0.5" value="0" />
+            </div>
+
+            <div class="control-row">
+              <div class="control-header">
+                <label for="slider-finish">Acabat tapa (Mat ↔ Brillant)</label>
+                <span id="val-finish" class="val">35%</span>
+              </div>
+              <input id="slider-finish" type="range" min="5" max="95" step="1" value="35" />
+            </div>
+          </div>
+        </section>
+
+        <!-- TAB 2: POSITION & CAMERA -->
+        <section id="tab-book" class="tab-pane">
+          <div class="section-group">
+            <h2>Vistes Ràpides</h2>
+            <div class="preset-grid">
+              <button class="preset-btn" data-preset="front">Portada</button>
+              <button class="preset-btn" data-preset="hero">3/4 Heroi</button>
+              <button class="preset-btn" data-preset="spine">Llom</button>
+              <button class="preset-btn" data-preset="back">Contraportada</button>
+              <button class="preset-btn" data-preset="open">Obert</button>
+              <button class="preset-btn" data-preset="top">Zenital</button>
+            </div>
+          </div>
+
+          <div class="section-group">
+            <h2>Rotació del Llibre</h2>
+            <div class="control-row">
+              <div class="control-header">
+                <label for="slider-rot-y">Gir Horitzontal (Y)</label>
+                <span id="val-rot-y" class="val">-20°</span>
+              </div>
+              <input id="slider-rot-y" type="range" min="-180" max="180" step="0.5" value="-20" />
+            </div>
+
+            <div class="control-row">
+              <div class="control-header">
+                <label for="slider-rot-x">Inclinació (X)</label>
+                <span id="val-rot-x" class="val">10°</span>
+              </div>
+              <input id="slider-rot-x" type="range" min="-90" max="90" step="0.5" value="10" />
+            </div>
+
+            <div class="control-row">
+              <div class="control-header">
+                <label for="slider-rot-z">Balanç (Z)</label>
+                <span id="val-rot-z" class="val">0°</span>
+              </div>
+              <input id="slider-rot-z" type="range" min="-45" max="45" step="0.5" value="0" />
+            </div>
+          </div>
+
+          <div class="section-group">
+            <h2>Posició i Distància</h2>
+            <div class="control-row">
+              <div class="control-header">
+                <label for="slider-pos-x">Posició X</label>
+                <span id="val-pos-x" class="val">0.00</span>
+              </div>
+              <input id="slider-pos-x" type="range" min="-2.5" max="2.5" step="0.02" value="0" />
+            </div>
+
+            <div class="control-row">
+              <div class="control-header">
+                <label for="slider-pos-y">Posició Y</label>
+                <span id="val-pos-y" class="val">0.00</span>
+              </div>
+              <input id="slider-pos-y" type="range" min="-2.0" max="2.0" step="0.02" value="0" />
+            </div>
+
+            <div class="control-row">
+              <div class="control-header">
+                <label for="slider-zoom">Distància Càmera (Zoom)</label>
+                <span id="val-zoom" class="val">10.00</span>
+              </div>
+              <input id="slider-zoom" type="range" min="3.0" max="16.0" step="0.05" value="10.0" />
+            </div>
+          </div>
+
+          <div class="section-group">
+            <h2>Escena i Il·luminació</h2>
+            <div class="control-row">
+              <div class="control-header">
+                <label for="bg-color-select">Fons de l'escena</label>
+              </div>
+              <div class="color-row">
+                <select id="bg-color-select">
+                  <option value="#111318">Estudi Fosc (#111318)</option>
+                  <option value="#000000">Negre Pur (#000000)</option>
+                  <option value="#ffffff">Blanc Pur (#FFFFFF)</option>
+                  <option value="#f0ede8">Estudi Clar (#F0EDE8)</option>
+                  <option value="#00ff00">Chroma Verd (#00FF00)</option>
+                  <option value="custom">Color personalitzat...</option>
+                </select>
+                <input id="bg-color-picker" type="color" value="#111318" />
+              </div>
+            </div>
+
+            <div class="control-row">
+              <div class="control-header">
+                <label for="slider-light">Intensitat llum principal</label>
+                <span id="val-light" class="val">1.6</span>
+              </div>
+              <input id="slider-light" type="range" min="0.5" max="3.0" step="0.05" value="1.6" />
+            </div>
+
+            <label class="checkbox-row">
+              <input type="checkbox" id="chk-shadow" checked />
+              <span>Ombres suaus entre pàgines (només en vista color)</span>
+            </label>
+          </div>
+        </section>
+
+        <!-- TAB 3: ANIMATION & PAGE FLIP -->
+        <section id="tab-anim" class="tab-pane">
+          <div class="section-group">
+            <h2>Volta de 360º (amb frenada)</h2>
+            <div class="control-row">
+              <div class="control-header">
+                <label for="slider-turn-duration">Durada de la volta</label>
+                <span id="val-turn-duration" class="val">4.0 s</span>
+              </div>
+              <input id="slider-turn-duration" type="range" min="1.0" max="15.0" step="0.5" value="4.0" />
+            </div>
+
+            <div class="control-row">
+              <div class="control-header">
+                <label for="select-turn-angle">Angle de gir</label>
+              </div>
+              <select id="select-turn-angle">
+                <option value="360" selected>360º (Volta completa)</option>
+                <option value="-360">-360º (Volta completa inversa)</option>
+                <option value="180">180º (Portada → Contraportada)</option>
+                <option value="-180">-180º (Sentit invers)</option>
+              </select>
+            </div>
+
+            <div class="control-row">
+              <div class="control-header">
+                <label for="select-easing">Corba de frenada (Inicial i Final)</label>
+              </div>
+              <select id="select-easing">
+                <option value="cubic" selected>Suau Estàndard (Cubic Ease In-Out)</option>
+                <option value="quart">Frenada Accentuada (Quartic In-Out)</option>
+                <option value="quint">Frenada Cinemàtica (Quintic In-Out)</option>
+                <option value="sine">Suau Lleuger (Sine In-Out)</option>
+              </select>
+            </div>
+
+            <button id="btn-preview-180" class="btn-primary full-width">▶ Provar Volta 360º</button>
+          </div>
+
+          <div class="section-group">
+            <h2>Recorregut Ràpid Pàgines Interiors</h2>
+            <div class="control-row">
+              <div class="control-header">
+                <label for="slider-open-angle">Angle d'obertura màxim</label>
+                <span id="val-open-angle" class="val">172°</span>
+              </div>
+              <input id="slider-open-angle" type="range" min="60" max="180" step="2" value="172" />
+            </div>
+
+            <div class="control-row">
+              <div class="control-header">
+                <label for="slider-open-manual">Obertura manual del llibre</label>
+                <span id="val-open-manual" class="val">Tancat (0%)</span>
+              </div>
+              <input id="slider-open-manual" type="range" min="0" max="100" step="0.5" value="0" />
+            </div>
+
+            <div class="control-row">
+              <div class="control-header">
+                <label for="slider-page-manual">Recorregut de pàgines</label>
+                <span id="val-page-manual" class="val">Pàgina 1</span>
+              </div>
+              <input id="slider-page-manual" type="range" min="0" max="100" step="0.2" value="0" />
+            </div>
+
+            <div class="control-row">
+              <div class="control-header">
+                <label for="slider-flip-duration">Durada del recorregut ràpid</label>
+                <span id="val-flip-duration" class="val">4.5 s</span>
+              </div>
+              <input id="slider-flip-duration" type="range" min="1.5" max="15.0" step="0.5" value="4.5" />
+            </div>
+
+            <div class="control-row">
+              <div class="control-header">
+                <label for="slider-flip-pages">Pàgines a mostrar al recorregut</label>
+                <span id="val-flip-pages" class="val">20 fulles</span>
+              </div>
+              <input id="slider-flip-pages" type="range" min="4" max="24" step="1" value="20" />
+            </div>
+
+            <button id="btn-preview-flip" class="btn-secondary full-width">📖 Provar Recorregut Ràpid</button>
+          </div>
+        </section>
+
+        <!-- TAB 4: EXPORT 4K & ALPHA -->
+        <section id="tab-export" class="tab-pane">
+          <div class="section-group">
+            <h2>Exportació de Vídeo 4K UHD</h2>
+            <p class="hint">
+              Renderitza fotograma a fotograma a <strong>3840 × 2160</strong> sense pèrdua de fluïdesa,
+              i genera la versió sincronitzada en <strong>mapa Alpha Blanc i Negre</strong> (Luma Matte)
+              per a After Effects, Premiere o DaVinci Resolve.
+            </p>
+
+            <div class="control-row">
+              <div class="control-header">
+                <label>Font d'animació</label>
+                <span class="val">Timeline actual</span>
+              </div>
+              <p class="hint">S'exportarà exactament la seqüència de clips configurada a la timeline inferior.</p>
+            </div>
+
+            <div class="control-row">
+              <div class="control-header">
+                <label for="select-export-res">Resolució</label>
+              </div>
+              <select id="select-export-res">
+                <option value="3840x2160" selected>4K UHD (3840 × 2160)</option>
+                <option value="1920x1080">Full HD (1920 × 1080)</option>
+                <option value="2160x2160">4K Quadrat (2160 × 2160)</option>
+                <option value="2160x3840">4K Vertical Reels/TikTok (2160 × 3840)</option>
+              </select>
+            </div>
+
+            <div class="control-row">
+              <div class="control-header">
+                <label for="select-export-fps">Fotogrames per segon (FPS)</label>
+              </div>
+              <select id="select-export-fps">
+                <option value="50" selected>50 fps (PAL Broadcast · Alta fluïdesa)</option>
+                <option value="25">25 fps (PAL Europa)</option>
+                <option value="30">30 fps (Estàndard web)</option>
+              </select>
+            </div>
+
+            <div class="control-row">
+              <div class="control-header">
+                <label for="select-export-format">Format de sortida</label>
+              </div>
+              <select id="select-export-format">
+                <option value="mp4" selected>MP4 Alta Qualitat (H.264 · 45 Mbps)</option>
+                <option value="webm">WebM Alta Qualitat (VP9 · 40 Mbps)</option>
+              </select>
+            </div>
+
+            <div class="export-summary" id="export-summary">
+              Durada: 4.0s · 120 fotogrames · 3840×2160
+            </div>
+
+            <div class="export-buttons">
+              <button id="btn-export-both" class="btn-primary full-width">
+                🎬 Exportar Color 4K + Alpha B/N 4K
+              </button>
+              <button id="btn-export-color" class="btn-secondary full-width">
+                Exportar només Vídeo Color 4K
+              </button>
+              <button id="btn-export-alpha" class="btn-secondary full-width">
+                Exportar només Mapa Alpha B/N 4K
+              </button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </aside>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
